@@ -43,8 +43,17 @@ jobs:
             -DKYTY_BUILD_LAUNCHER=OFF -DKYTY_MARCH=x86-64-v3
 
       - name: Build
-        shell: cmd
-        run: cmake --build _Build/windows --target kyty_emulator --parallel
+        shell: pwsh
+        run: |
+          cmake --build _Build/windows --target kyty_emulator --parallel 2>&1 | Tee-Object -FilePath build.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # Errors as annotations (readable through the checks API).
+            Select-String -Path build.log -Pattern 'error|FAILED|undefined symbol' |
+              Select-Object -First 40 |
+              ForEach-Object { $m = $_.Line.Trim(); if ($m.Length -gt 900) { $m = $m.Substring(0, 900) }; Write-Output "::error::$m" }
+            exit $code
+          }
 
       - name: Smoke test
         shell: cmd
