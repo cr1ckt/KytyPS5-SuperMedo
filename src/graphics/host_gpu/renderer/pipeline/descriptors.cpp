@@ -1035,8 +1035,68 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	}
 }
 
+// SuperMedo: a binding whose image the texture cache no longer accepts in FindTexture
+// (unregistered, aliased to a depth owner, or marked for rebind) must be found again.
+bool RenderExecutor::TextureBindingStale(TextureCache& cache, const TextureBinding& binding) {
+	const auto image = cache.m_slot_images.try_get(binding.image_id);
+	if (image == nullptr || image->binding.needs_rebind) {
+		return true;
+	}
+	return !image->info.data.Empty() && (!image->registered || image->depth_id);
+}
+
+bool RenderExecutor::ResolveStaleImages(PreparedBindings& prepared) {
+	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
+	const auto& program  = *prepared.runtime->program;
+	const auto& snapshot = prepared.runtime->resources;
+	auto&       images   = prepared.images;
+	EXIT_IF(images.size() != program.info.images.size());
+	auto& texture_cache = m_context.GetTextureCache();
+	bool  changed       = false;
+	for (uint32_t i = 0; i < program.info.images.size(); i++) {
+		if (!TextureBindingStale(texture_cache, images[i])) {
+			continue;
+		}
+		if (auto* old_image = texture_cache.m_slot_images.try_get(images[i].image_id); old_image != nullptr) {
+			old_image->binding = {};
+		}
+		images[i] = ResolveTexture(program.info.images[i], snapshot.images[i]);
+		BindImage(images[i].image_id, images[i].desc.type == TextureCache::BindingType::Storage);
+		changed = true;
+	}
+	return changed;
+}
+
 void RenderExecutor::RebindImages(PreparedBindings& prepared) {
+	PreparedBindings* const stages[] = {&prepared};
+	RebindImages(std::span<PreparedBindings* const>(stages));
+}
+
+void RenderExecutor::RebindImages(std::span<PreparedBindings* const> stages) {
 	KYTY_PROFILER_FUNCTION();
+	// Discovering one texture (for example a new large array that overlaps older images) can
+	// unregister or merge images that were already checked, in this stage or another one. Repeat
+	// until a whole pass over every stage is stable.
+	constexpr int MAX_PASSES = 16;
+	for (int pass = 0; pass < MAX_PASSES; pass++) {
+		bool changed = false;
+		for (auto* stage: stages) {
+			if (stage != nullptr) {
+				changed |= ResolveStaleImages(*stage);
+			}
+		}
+		if (!changed) {
+			break;
+		}
+	}
+	for (auto* stage: stages) {
+		if (stage != nullptr) {
+			AcquireImageViews(*stage);
+		}
+	}
+}
+
+void RenderExecutor::AcquireImageViews(PreparedBindings& prepared) {
 	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
 	const auto& program  = *prepared.runtime->program;
 	const auto& snapshot = prepared.runtime->resources;
@@ -1044,19 +1104,16 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	EXIT_IF(images.size() != program.info.images.size());
 	auto& texture_cache = m_context.GetTextureCache();
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
-		const auto old_image = texture_cache.m_slot_images.try_get(images[i].image_id);
-		if (old_image == nullptr || (!old_image->registered && !old_image->info.data.Empty()) ||
-		    old_image->binding.needs_rebind) {
-			if (old_image != nullptr) {
+		auto& binding = images[i];
+		// Acquiring an earlier view (RefreshImage) can still invalidate this one: find it again
+		// here rather than stopping the emulator in FindTexture.
+		for (int attempt = 0; attempt < 4 && TextureBindingStale(texture_cache, binding); attempt++) {
+			if (auto* old_image = texture_cache.m_slot_images.try_get(binding.image_id); old_image != nullptr) {
 				old_image->binding = {};
 			}
-			images[i] = ResolveTexture(program.info.images[i], snapshot.images[i]);
-			BindImage(images[i].image_id,
-			          images[i].desc.type == TextureCache::BindingType::Storage);
+			binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
+			BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
 		}
-	}
-	for (uint32_t i = 0; i < program.info.images.size(); i++) {
-		auto& binding = images[i];
 		binding.mip_views.clear();
 		const auto& resource = program.info.images[i];
 		if (resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::DynamicStorage) {
@@ -1119,9 +1176,10 @@ void RenderExecutor::PrepareGraphicsBindingsInto(const ShaderStageRuntime& verte
 	if (bindings.pixel) {
 		RebindBuffers(*bindings.pixel);
 	}
-	RebindImages(bindings.vertex);
-	if (bindings.pixel) {
-		RebindImages(*bindings.pixel);
+	{
+		PreparedBindings* const stages[] = {&bindings.vertex,
+		                                    bindings.pixel ? &*bindings.pixel : nullptr};
+		RebindImages(std::span<PreparedBindings* const>(stages));
 	}
 }
 

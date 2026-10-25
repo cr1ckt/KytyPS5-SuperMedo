@@ -193,6 +193,12 @@ public:
 	void PrepareBdaBindings(const PreparedBindings& first, const PreparedBindings* second = nullptr);
 	void                           RebindBuffers(PreparedBindings& bindings);
 	void                           RebindImages(PreparedBindings& bindings);
+	// Several stages of one draw: rediscovers stale textures in every stage until a full pass
+	// changes nothing, then acquires the views (one stage's discovery can invalidate another's).
+	void                           RebindImages(std::span<PreparedBindings* const> stages);
+	bool                           ResolveStaleImages(PreparedBindings& bindings);
+	static bool                    TextureBindingStale(TextureCache& cache, const TextureBinding& binding);
+	void                           AcquireImageViews(PreparedBindings& bindings);
 	void CommitBindings(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
 	                    const PipelineCache::Pipeline&     pipeline,
 	                    std::span<PreparedBindings* const> bindings, bool compute_chain = false);

@@ -1,0 +1,60 @@
+name: SuperMedo Windows emulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ fix-texture-rediscovery ]
+
+jobs:
+  emulator:
+    name: kyty_emulator.exe (Windows, x86-64-v3)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: glslang
+        shell: pwsh
+        run: |
+          $vcpkgRoot = Split-Path (Get-Command vcpkg).Source
+          vcpkg install glslang[tools,opt]:x64-windows
+          "$vcpkgRoot\installed\x64-windows\tools\glslang" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Toolchain
+        shell: cmd
+        run: |
+          clang-cl --version
+          cmake --version
+          glslangValidator --version
+
+      - name: Configure
+        shell: cmd
+        run: |
+          cmake -S . -B _Build/windows -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl ^
+            -DKYTY_BUILD_LAUNCHER=OFF -DKYTY_MARCH=x86-64-v3
+
+      - name: Build
+        shell: cmd
+        run: cmake --build _Build/windows --target kyty_emulator --parallel
+
+      - name: Smoke test
+        shell: cmd
+        run: _Build\windows\kyty_emulator.exe --help & exit /b 0
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyty_emulator-texture-fix
+          path: |
+            _Build/windows/kyty_emulator.exe
+            _Build/windows/*.dll
+          if-no-files-found: error

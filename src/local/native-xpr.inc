@@ -1526,7 +1526,7 @@ bool RenderExecutor::NativeXprRebind(NativeXprRecord&                           
 	}
 	for (uint32_t st = 0; st < record.stage_count && ok; ++st) FindBuffers(prepared[st]);
 	for (uint32_t st = 0; st < record.stage_count && ok; ++st) RebindBuffers(prepared[st]);
-	for (uint32_t st = 0; st < record.stage_count && ok; ++st) RebindImages(prepared[st]);
+	RebindImages(std::span<PreparedBindings* const>(stages.data(), record.stage_count));
 	for (uint32_t st = 0; st < record.stage_count && ok; ++st)
 		for (auto& binding: prepared[st].images) {
 			auto& image = textures.GetImage(binding.image_id);
